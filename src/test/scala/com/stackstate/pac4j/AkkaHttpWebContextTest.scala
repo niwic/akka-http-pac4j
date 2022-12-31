@@ -1,19 +1,18 @@
 package com.stackstate.pac4j
 
 import java.util.Optional
-
 import akka.http.scaladsl.model.HttpHeader.ParsingResult.Ok
 import akka.http.scaladsl.model.headers.{Cookie, HttpCookie}
 import akka.http.scaladsl.model._
 import com.stackstate.pac4j.store.SessionStorage._
 import com.stackstate.pac4j.store.{ForgetfulSessionStorage, SessionStorage}
-
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpecLike
 
 import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import akka.http.scaladsl.model.headers.Location
+import org.scalatest.Assertion
 
 class AkkaHttpWebContextTest extends AnyWordSpecLike with Matchers {
   lazy val cookie = ("cookieName", "cookieValue")
@@ -296,7 +295,7 @@ class AkkaHttpWebContextTest extends AnyWordSpecLike with Matchers {
                   hostAddress: String = "",
                   hostPort: Int = 0,
                   formFields: Seq[(String, String)] = Seq.empty,
-                  sessionStorage: SessionStorage = new ForgetfulSessionStorage)(f: AkkaHttpWebContext => Unit): Unit = {
+                  sessionStorage: SessionStorage = new ForgetfulSessionStorage)(f: AkkaHttpWebContext => Assertion): Assertion = {
     val parsedHeaders: List[HttpHeader] = requestHeaders.map { case (k, v) => HttpHeader.parse(k, v) }.collect { case Ok(header, _) => header }
     val completeHeaders: List[HttpHeader] = parsedHeaders ++ cookies
     val uri = Uri(url).withScheme(scheme).withAuthority(hostAddress, hostPort)

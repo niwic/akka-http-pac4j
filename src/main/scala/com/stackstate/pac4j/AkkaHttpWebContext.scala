@@ -7,7 +7,7 @@ import akka.http.scaladsl.model.{ContentType, HttpHeader, HttpRequest}
 import com.stackstate.pac4j.authorizer.CsrfCookieAuthorizer
 import com.stackstate.pac4j.http.AkkaHttpSessionStore
 import com.stackstate.pac4j.store.SessionStorage
-import org.pac4j.core.context.{Cookie, WebContext}
+import org.pac4j.core.context.{Cookie, FrameworkParameters, WebContext}
 
 import compat.java8.OptionConverters._
 import scala.collection.JavaConverters._
@@ -21,7 +21,7 @@ class AkkaHttpWebContext(val request: HttpRequest,
                          val formFields: Seq[(String, String)],
                          private[pac4j] val sessionStorage: SessionStorage,
                          val sessionCookieName: String)
-    extends WebContext {
+    extends WebContext with FrameworkParameters {
 
   import com.stackstate.pac4j.AkkaHttpWebContext._
 
@@ -93,10 +93,14 @@ class AkkaHttpWebContext(val request: HttpRequest,
     changes = changes.copy(cookies = changes.cookies ++ List(httpCookie))
   }
 
-  override lazy val getSessionStore = new AkkaHttpSessionStore()
+  lazy val getSessionStore = new AkkaHttpSessionStore()
 
   override def getRemoteAddr: String = {
     request.getUri().getHost.address()
+  }
+
+  override def getResponseHeader(name: String): Optional[String] = {
+    changes.headers.find(_.name() == name).map(_.value()).asJava
   }
 
   override def setResponseHeader(name: String, value: String): Unit = {

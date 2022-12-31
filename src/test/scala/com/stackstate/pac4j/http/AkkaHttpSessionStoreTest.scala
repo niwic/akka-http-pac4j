@@ -14,13 +14,13 @@ class AkkaHttpSessionStoreTest extends AnyWordSpecLike with Matchers with Scalat
   "AkkaHttpSessionStore.get" should {
     "return the None if nothing exists in the store" in {
       val context = new AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME)
-      new AkkaHttpSessionStore().getSessionId(context) shouldBe None
+      new AkkaHttpSessionStore().getSessionId(context, createSession = false) shouldBe None
     }
 
     "return an existing session if one exist" in {
       val context = new AkkaHttpWebContext(HttpRequest(), Seq.empty, new InMemorySessionStorage(30.minutes), AkkaHttpWebContext.DEFAULT_COOKIE_NAME)
       context.trackSession("foo")
-      new AkkaHttpSessionStore().getSessionId(context) shouldBe Some("foo")
+      new AkkaHttpSessionStore().getSessionId(context, createSession = false) shouldBe Some("foo")
     }
   }
 
