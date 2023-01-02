@@ -1,5 +1,6 @@
 package com.stackstate.pac4j
 
+import com.stackstate.pac4j.http.AkkaHttpSessionStore
 import org.pac4j.core.profile.UserProfile
 
 /**
@@ -7,6 +8,7 @@ import org.pac4j.core.profile.UserProfile
   * library cannot mess with it.
   */
 case class AuthenticatedRequest private[pac4j] (private[pac4j] val webContext: AkkaHttpWebContext,
+                                                private[pac4j] val sessionStore: AkkaHttpSessionStore,
                                                 /*
                                                  * Profiles can be accessed such that the user can inspect data
                                                  * from the authentication. Should not be empty after authentication

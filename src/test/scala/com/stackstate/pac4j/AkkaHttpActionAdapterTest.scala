@@ -7,6 +7,7 @@ import akka.http.scaladsl.model.StatusCodes._
 import akka.http.scaladsl.model.headers.HttpCookie
 import akka.util.ByteString
 import com.stackstate.pac4j.AkkaHttpActionAdapterTest.ActionInt
+import com.stackstate.pac4j.AkkaHttpWebContext.ResponseChanges
 import com.stackstate.pac4j.http.AkkaHttpActionAdapter
 import com.stackstate.pac4j.store.ForgetfulSessionStorage
 import org.pac4j.core.exception.http.{BadRequestAction, ForbiddenAction, FoundAction, HttpAction, NoContentAction, OkAction, StatusAction, UnauthorizedAction}
@@ -72,7 +73,7 @@ class AkkaHttpActionAdapterTest extends AnyWordSpecLike with Matchers with Scala
   }
 
   def withContext(f: AkkaHttpWebContext => Assertion): Assertion = {
-    f(AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME))
+    f(AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME, ResponseChanges.empty))
   }
 }
 

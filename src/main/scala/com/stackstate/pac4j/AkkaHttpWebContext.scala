@@ -4,10 +4,11 @@ import java.util.{Optional, UUID}
 import akka.http.scaladsl.model.HttpHeader.ParsingResult.{Error, Ok}
 import akka.http.scaladsl.model.headers.HttpCookie
 import akka.http.scaladsl.model.{ContentType, HttpHeader, HttpRequest}
+import com.stackstate.pac4j.AkkaHttpWebContext.ResponseChanges
 import com.stackstate.pac4j.authorizer.CsrfCookieAuthorizer
 import com.stackstate.pac4j.http.AkkaHttpSessionStore
 import com.stackstate.pac4j.store.SessionStorage
-import org.pac4j.core.context.{Cookie, FrameworkParameters, WebContext}
+import org.pac4j.core.context.{Cookie, WebContext}
 
 import compat.java8.OptionConverters._
 import scala.collection.JavaConverters._
@@ -20,12 +21,11 @@ import scala.collection.JavaConverters._
 class AkkaHttpWebContext(val request: HttpRequest,
                          val formFields: Seq[(String, String)],
                          private[pac4j] val sessionStorage: SessionStorage,
-                         val sessionCookieName: String)
-    extends WebContext with FrameworkParameters {
+                         val sessionCookieName: String,
+                         val changes: ResponseChanges)
+    extends WebContext {
 
   import com.stackstate.pac4j.AkkaHttpWebContext._
-
-  private var changes = ResponseChanges.empty
 
   //Only compute the request cookies once
   private lazy val requestCookies = request.cookies.map { akkaCookie =>
@@ -36,15 +36,9 @@ class AkkaHttpWebContext(val request: HttpRequest,
   private lazy val requestParameters =
     formFields.toMap ++ request.getUri().query().toMap.asScala
 
-  private var sessionId: Option[String] = request.cookies
-    .find(_.name == sessionCookieName)
-    .map(_.value)
-    .filter(_.nonEmpty)
-    .find(session => sessionStorage.sessionExists(session))
-
   def getOrCreateSessionId(): String = {
     val newSession =
-      sessionId
+      changes.sessionId
         .find(session => sessionStorage.sessionExists(session))
         .getOrElse {
           val sessionId = UUID.randomUUID().toString
@@ -52,23 +46,23 @@ class AkkaHttpWebContext(val request: HttpRequest,
           sessionId
         }
 
-    sessionId = Some(newSession)
+    changes.sessionId = Some(newSession)
     newSession
   }
 
   def getSessionId: Option[String] = {
-    sessionId
+    changes.sessionId
   }
 
   private[pac4j] def destroySession(): Boolean = {
-    sessionId.foreach(sessionStorage.destroySession)
-    sessionId = None
+    changes.sessionId.foreach(sessionStorage.destroySession)
+    changes.sessionId = None
     true
   }
 
   private[pac4j] def trackSession(session: String) = {
     sessionStorage.createSessionIfNeeded(session)
-    sessionId = Some(session)
+    changes.sessionId = Some(session)
     true
   }
 
@@ -90,7 +84,7 @@ class AkkaHttpWebContext(val request: HttpRequest,
 
   override def addResponseCookie(cookie: Cookie): Unit = {
     val httpCookie = toAkkaHttpCookie(cookie)
-    changes = changes.copy(cookies = changes.cookies ++ List(httpCookie))
+    changes.addResponseCookie(httpCookie)
   }
 
   lazy val getSessionStore = new AkkaHttpSessionStore()
@@ -109,8 +103,7 @@ class AkkaHttpWebContext(val request: HttpRequest,
       case Error(error) => throw new IllegalArgumentException(s"Error parsing http header ${error.formatPretty}")
     }
 
-    // Avoid adding duplicate headers, Pac4J expects to overwrite headers like `Location`
-    changes = changes.copy(headers = header :: changes.headers.filter(_.name != name))
+    changes.setResponseHeader(header)
   }
 
   @com.github.ghik.silencer.silent("mapValues")
@@ -128,7 +121,7 @@ class AkkaHttpWebContext(val request: HttpRequest,
   override def setResponseContentType(contentType: String): Unit = {
     ContentType.parse(contentType) match {
       case Right(ct) =>
-        changes = changes.copy(contentType = Some(ct))
+        changes.setResponseContentType(ct)
 
       case Left(_) =>
         throw new IllegalArgumentException(s"Invalid response content type $contentType")
@@ -156,7 +149,7 @@ class AkkaHttpWebContext(val request: HttpRequest,
   override def getServerPort: Int = request.getUri().getPort
 
   override def setRequestAttribute(name: String, value: scala.AnyRef): Unit =
-    changes = changes.copy(attributes = changes.attributes ++ Map[String, AnyRef](name -> value))
+    changes.setRequestAttribute(name, value)
 
   override def getRequestAttribute(name: String): Optional[AnyRef] =
     changes.attributes.get(name).asJava
@@ -190,19 +183,41 @@ class AkkaHttpWebContext(val request: HttpRequest,
 }
 
 object AkkaHttpWebContext {
-  def apply(request: HttpRequest, formFields: Seq[(String, String)], sessionStorage: SessionStorage, sessionCookieName: String): AkkaHttpWebContext =
-    new AkkaHttpWebContext(request, formFields, sessionStorage, sessionCookieName)
+  def apply(request: HttpRequest,
+            formFields: Seq[(String, String)],
+            sessionStorage: SessionStorage,
+            sessionCookieName: String,
+            changes: ResponseChanges): AkkaHttpWebContext =
+    new AkkaHttpWebContext(request, formFields, sessionStorage, sessionCookieName, changes)
 
   //This class is where all the HTTP response changes are stored so that they can later be applied to an HTTP Request
-  case class ResponseChanges private (headers: List[HttpHeader],
-                                      contentType: Option[ContentType],
-                                      content: String,
-                                      cookies: List[HttpCookie],
-                                      attributes: Map[String, AnyRef])
+  case class ResponseChanges private (var headers: List[HttpHeader],
+                                      var contentType: Option[ContentType],
+                                      var content: String,
+                                      var cookies: List[HttpCookie],
+                                      var attributes: Map[String, AnyRef],
+                                      var sessionId: Option[String]) {
+
+    def addResponseCookie(httpCookie: HttpCookie): Unit = {
+      cookies = cookies :+ httpCookie
+    }
+
+    def setResponseHeader(httpHeader: HttpHeader): Unit = {
+      // Avoid adding duplicate headers, Pac4J expects to overwrite headers like `Location`
+      headers = httpHeader :: headers.filter(_.name != httpHeader.name())
+    }
+
+    def setRequestAttribute(name: String, value: scala.AnyRef): Unit =
+      attributes = attributes ++ Map[String, AnyRef](name -> value)
+
+    def setResponseContentType(contentType: ContentType): Unit =
+      this.contentType = Some(contentType)
+
+  }
 
   object ResponseChanges {
     def empty: ResponseChanges = {
-      ResponseChanges(List.empty, None, "", List.empty, Map.empty)
+      ResponseChanges(List.empty, None, "", List.empty, Map.empty, None)
     }
   }
 

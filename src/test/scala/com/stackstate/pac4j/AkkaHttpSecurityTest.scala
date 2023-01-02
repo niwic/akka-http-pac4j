@@ -1,5 +1,7 @@
 package com.stackstate.pac4j
 
+import akka.http.scaladsl.model.HttpHeader.ParsingResult
+
 import java.{lang, util}
 import com.github.ghik.silencer.silent
 import akka.http.scaladsl.model._
@@ -9,7 +11,8 @@ import akka.http.scaladsl.server.{AuthorizationFailedRejection, RouteResult}
 import akka.http.scaladsl.server.RouteResult.Complete
 import akka.http.scaladsl.testkit.ScalatestRouteTest
 import com.stackstate.pac4j.AkkaHttpSecurity.{AkkaHttpCallbackLogic, AkkaHttpLogoutLogic, AkkaHttpSecurityLogic}
-import com.stackstate.pac4j.http.AkkaHttpActionAdapter
+import com.stackstate.pac4j.AkkaHttpWebContext.ResponseChanges
+import com.stackstate.pac4j.http.{AkkaHttpActionAdapter, AkkaHttpSessionStore, AkkaHttpSessionStoreFactory}
 import com.stackstate.pac4j.store.{ForgetfulSessionStorage, InMemorySessionStorage}
 import org.pac4j.core.client.{Clients, IndirectClient}
 import org.pac4j.core.config.Config
@@ -90,7 +93,8 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
                              authorizers: String,
                              matchers: String,
                              parameters: FrameworkParameters): Future[RouteResult] = {
-          val context = parameters.asInstanceOf[AkkaHttpWebContext]
+          val akkaParameters = parameters.asInstanceOf[AkkaHttpFrameworkParameters]
+          val context = AkkaHttpWebContextFactory.newContext(akkaParameters)
           securityGrantedAccessAdapter
             .adapt(context, context.getSessionStore, List[UserProfile](profile).asJava, new FrameworkParameters {})
             .asInstanceOf[Future[RouteResult]]
@@ -119,8 +123,9 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
       val config = new Config()
       val akkaHttpSecurity = new AkkaHttpSecurity(config, new ForgetfulSessionStorage)
 
-      Get("/") ~> akkaHttpSecurity.withContext() { context =>
-        context.setResponseHeader("MyHeader", "MyValue")
+      Get("/") ~> akkaHttpSecurity.withParameters() { parameters =>
+        val header = HttpHeader.parse("MyHeader", "MyValue").asInstanceOf[ParsingResult.Ok].header
+        parameters.changes.setResponseHeader(header)
         complete("called!")
       } ~> check {
         status shouldEqual StatusCodes.OK
@@ -133,7 +138,7 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
       val config = new Config()
       val akkaHttpSecurity = new AkkaHttpSecurity(config, new ForgetfulSessionStorage)
 
-      Get("/") ~> akkaHttpSecurity.withContext() { context =>
+      Get("/") ~> akkaHttpSecurity.withParameters() { parameters =>
         val cookie = new Cookie("MyCookie", "MyValue")
         cookie.setSecure(true)
         cookie.setMaxAge(100)
@@ -146,8 +151,8 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
         cookie2.setHttpOnly(true)
         cookie2.setPath("/")
 
-        context.addResponseCookie(cookie)
-        context.addResponseCookie(cookie2)
+        parameters.changes.addResponseCookie(HttpCookie(cookie.getName, cookie.getValue, secure = cookie.isSecure, maxAge = Some(cookie.getMaxAge.toLong), httpOnly = cookie.isHttpOnly, path = Some(cookie.getPath)))
+        parameters.changes.addResponseCookie(HttpCookie(cookie2.getName, cookie2.getValue, secure = cookie2.isSecure, maxAge = Some(cookie2.getMaxAge.toLong), httpOnly = cookie2.isHttpOnly, path = Some(cookie2.getPath)))
         complete("called!")
       } ~> check {
         status shouldEqual StatusCodes.OK
@@ -212,7 +217,7 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
 
       val akkaHttpSecurity = new AkkaHttpSecurity(config, new ForgetfulSessionStorage)
 
-      Get("/") ~> akkaHttpSecurity.callback("/blaat", saveInSession = false, Some("Yooo")) ~> check {
+      Get("/") ~> akkaHttpSecurity.callback("/blaat", renewSession = true, Some("Yooo")) ~> check {
         status shouldEqual StatusCodes.OK
         responseAs[String] shouldBe "called!"
       }
@@ -220,7 +225,10 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
 
     "run the callbackLogic reusing an akka http context" in {
       val config = new Config()
-      val existingContext = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME)
+      val existingParameters = AkkaHttpFrameworkParameters(
+        HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME, ResponseChanges.empty
+      )
+      val existingContext = AkkaHttpWebContextFactory.newContext(existingParameters)
 
       val actionAdapter = new HttpActionAdapter {
         override def adapt(code: HttpAction, context: WebContext): HttpResponse = ???
@@ -233,7 +241,8 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
                              renewSession: lang.Boolean,
                              defaultClient: String,
                              parameters: FrameworkParameters): Future[RouteResult] = {
-          val context = parameters.asInstanceOf[AkkaHttpWebContext]
+          val akkaParameters = parameters.asInstanceOf[AkkaHttpFrameworkParameters]
+          val context = AkkaHttpWebContextFactory.newContext(akkaParameters)
           existingContext.getSessionId shouldBe context.getSessionId
           defaultUrl shouldBe "/blaat"
           renewSession shouldBe true
@@ -246,7 +255,7 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
       val akkaHttpSecurity = new AkkaHttpSecurity(config, new ForgetfulSessionStorage)
 
       Get("/") ~> akkaHttpSecurity
-        .callback("/blaat", saveInSession = false, Some("Yooo"), existingContext = Some(existingContext)) ~> check {
+        .callback("/blaat", renewSession = true, Some("Yooo"), existingParameters = Some(existingParameters)) ~> check {
         status shouldEqual StatusCodes.OK
         responseAs[String] shouldBe "called!"
       }
@@ -254,7 +263,9 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
 
     "run the callbackLogic should not send back a sessionId if the set csrf cookie is false" in {
       val config = new Config()
-      val existingContext = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME)
+      val existingParameters = AkkaHttpFrameworkParameters(
+        HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME, ResponseChanges.empty
+      )
 
       val actionAdapter = new HttpActionAdapter {
         override def adapt(code: HttpAction, context: WebContext): HttpResponse = ???
@@ -273,7 +284,7 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
       val akkaHttpSecurity = new AkkaHttpSecurity(config, new ForgetfulSessionStorage)
 
       Get("/") ~> akkaHttpSecurity
-        .callback("/blaat", saveInSession = false, Some("Yooo"), existingContext = Some(existingContext), setCsrfCookie = false) ~> check {
+        .callback("/blaat", renewSession = false, Some("Yooo"), existingParameters = Some(existingParameters), setCsrfCookie = false) ~> check {
         // Session Store is empty so `addResponseSessionCookie` will create a token that will expire immediately
         header("Set-Cookie").get.value().contains("AkkaHttpPac4jSession=; Max-Age=0;") shouldBe true
 
@@ -282,11 +293,12 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
 
     "run the callbackLogic should send back a sessionId if the csrf cookie is true" in {
       val config = new Config()
-      val existingContext = AkkaHttpWebContext(
+      val existingParameters = AkkaHttpFrameworkParameters(
         HttpRequest(uri = "http://test.com"),
         Seq.empty,
         new InMemorySessionStorage(3.minutes),
-        AkkaHttpWebContext.DEFAULT_COOKIE_NAME
+        AkkaHttpWebContext.DEFAULT_COOKIE_NAME,
+        ResponseChanges.empty
       )
 
       val actionAdapter = new HttpActionAdapter {
@@ -305,7 +317,7 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
 
       val akkaHttpSecurity = new AkkaHttpSecurity(config, new InMemorySessionStorage(3.minutes))
       Get("http://test.com/") ~> akkaHttpSecurity
-        .callback("/blaat", saveInSession = false, Some("Yooo"), existingContext = Some(existingContext), setCsrfCookie = true) ~> check {
+        .callback("/blaat", renewSession = false, Some("Yooo"), existingParameters = Some(existingParameters), setCsrfCookie = true) ~> check {
         val localHeaders: Seq[HttpHeader] = headers
         val threeMinutesInSeconds = 180
         // When `addResponseCsrfCookie` is called the method `getOrCreateSessionId` is called which creates a Session
@@ -327,14 +339,15 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
   "AkkaHttpSecurity.authorize" should {
     "pass the provided authenticationRequest to the authorizer" in {
       val profile = new CommonProfile()
-      val context = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME)
+      val context = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME, ResponseChanges.empty)
+      val sessionStore = new AkkaHttpSessionStore()
 
       val route =
         AkkaHttpSecurity.authorize((_: WebContext, _: SessionStore, profiles: util.List[UserProfile]) => {
           profiles.size() shouldBe 1
           profiles.get(0) shouldBe profile
           false
-        })(AuthenticatedRequest(context, List(profile))) {
+        })(AuthenticatedRequest(context, sessionStore, List(profile))) {
           complete("oops!")
         }
 
@@ -342,12 +355,13 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
     }
 
     "reject when authorization fails" in {
-      val context = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME)
+      val context = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME, ResponseChanges.empty)
+      val sessionStore = new AkkaHttpSessionStore()
 
       val route =
         AkkaHttpSecurity.authorize((_: WebContext, _: SessionStore, _: util.List[UserProfile]) => {
           false
-        })(AuthenticatedRequest(context, List.empty)) {
+        })(AuthenticatedRequest(context, sessionStore, List.empty)) {
           complete("oops!")
         }
 
@@ -355,12 +369,13 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
     }
 
     "succeed when authorization succeeded" in {
-      val context = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME)
+      val context = AkkaHttpWebContext(HttpRequest(), Seq.empty, new ForgetfulSessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME, ResponseChanges.empty)
+      val sessionStore = new AkkaHttpSessionStore()
 
       val route =
         AkkaHttpSecurity.authorize((_: WebContext, _: SessionStore, _: util.List[UserProfile]) => {
           true
-        })(AuthenticatedRequest(context, List.empty)) {
+        })(AuthenticatedRequest(context, sessionStore, List.empty)) {
           complete("cool!")
         }
 
@@ -416,7 +431,14 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
                              inputDestroySession: lang.Boolean,
                              inputCentralLogout: lang.Boolean,
                              parameters: FrameworkParameters): Future[RouteResult] = {
-          val context = parameters.asInstanceOf[AkkaHttpWebContext]
+          val akkaParameters = parameters.asInstanceOf[AkkaHttpFrameworkParameters]
+          val context = AkkaHttpWebContext(
+            akkaParameters.request,
+            akkaParameters.formFields,
+            akkaParameters.sessionStorage,
+            akkaParameters.sessionCookieName,
+            akkaParameters.changes,
+          )
 
           val profiles = new util.HashMap[String, UserProfile]()
           profiles.put("john", new CommonProfile())
@@ -424,7 +446,7 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
           context.sessionStorage.getSessionValue(context.getOrCreateSessionId(), Pac4jConstants.USER_PROFILES) contains profiles
 
           val response = super
-            .perform(config, defaultUrl, inputLogoutUrlPattern, inputLocalLogout, inputDestroySession, inputCentralLogout, context)
+            .perform(config, defaultUrl, inputLogoutUrlPattern, inputLocalLogout, inputDestroySession, inputCentralLogout, parameters)
           context.sessionStorage.getSessionValue(context.getOrCreateSessionId(), Pac4jConstants.USER_PROFILES) shouldBe empty
 
           response.asInstanceOf[Future[RouteResult]]
@@ -433,6 +455,8 @@ class AkkaHttpSecurityTest extends AnyWordSpecLike with Matchers with ScalatestR
 
       client.setMultiProfile(false)
 
+      config.setWebContextFactory(AkkaHttpWebContextFactory)
+      config.setSessionStoreFactory(AkkaHttpSessionStoreFactory)
       config.setHttpActionAdapter(AkkaHttpActionAdapter)
       config.setLogoutLogic(logoutLogic)
       config.setClients(new Clients("url", client))

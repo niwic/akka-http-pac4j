@@ -12,6 +12,7 @@ import org.scalatest.wordspec.AnyWordSpecLike
 import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import akka.http.scaladsl.model.headers.Location
+import com.stackstate.pac4j.AkkaHttpWebContext.ResponseChanges
 import org.scalatest.Assertion
 
 class AkkaHttpWebContextTest extends AnyWordSpecLike with Matchers {
@@ -300,7 +301,8 @@ class AkkaHttpWebContextTest extends AnyWordSpecLike with Matchers {
     val completeHeaders: List[HttpHeader] = parsedHeaders ++ cookies
     val uri = Uri(url).withScheme(scheme).withAuthority(hostAddress, hostPort)
     val request = HttpRequest(uri = uri, headers = completeHeaders)
+    val parameters = AkkaHttpFrameworkParameters(request, formFields, sessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME, ResponseChanges.empty)
 
-    f(AkkaHttpWebContext(request, formFields, sessionStorage, AkkaHttpWebContext.DEFAULT_COOKIE_NAME))
+    f(AkkaHttpWebContextFactory.newContext(parameters))
   }
 }
